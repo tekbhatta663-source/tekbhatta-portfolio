@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { getSupabase } from "@/lib/supabase";
 
 type State = { kind: "idle" | "sending" | "ok" | "err"; message?: string };
 
@@ -16,6 +17,28 @@ export default function ContactForm() {
     e.preventDefault();
     setState({ kind: "sending" });
     try {
+      if (form.honeypot) {
+        setState({ kind: "ok", message: "Message sent. I'll reply soon." });
+        return;
+      }
+
+      const sb = getSupabase();
+      if (sb) {
+        const { error } = await sb.from("contact_messages").insert({
+          name: form.name.trim(),
+          email: form.email.trim(),
+          subject: form.subject.trim(),
+          message: form.message.trim(),
+        });
+        if (error) {
+          setState({ kind: "err", message: "Could not save your message. Please email tekbhatta663@gmail.com." });
+          return;
+        }
+        setState({ kind: "ok", message: "Message saved and waiting in the inbox. I'll reply by email." });
+        setForm({ name: "", email: "", subject: "", message: "", honeypot: "" });
+        return;
+      }
+
       const endpoint = process.env.NEXT_PUBLIC_CONTACT_ENDPOINT;
       if (!endpoint) {
         setState({
