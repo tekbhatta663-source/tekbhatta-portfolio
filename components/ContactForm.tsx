@@ -16,17 +16,25 @@ export default function ContactForm() {
     e.preventDefault();
     setState({ kind: "sending" });
     try {
-      const res = await fetch("/api/contact", {
+      const endpoint = process.env.NEXT_PUBLIC_CONTACT_ENDPOINT;
+      if (!endpoint) {
+        setState({
+          kind: "err",
+          message: "Form delivery is not connected yet. Email tekbhatta663@gmail.com directly and it reaches me today.",
+        });
+        return;
+      }
+      const res = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(form),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setState({ kind: "err", message: data.error || "Something went wrong. Please email directly." });
+        setState({ kind: "err", message: data.error || "Something went wrong. Please email tekbhatta663@gmail.com instead." });
         return;
       }
-      setState({ kind: "ok", message: data.message });
+      setState({ kind: "ok", message: data.message || "Message sent. I'll reply soon." });
       setForm({ name: "", email: "", subject: "", message: "", honeypot: "" });
     } catch {
       setState({ kind: "err", message: "Network error. You can email tekbhatta663@gmail.com directly." });

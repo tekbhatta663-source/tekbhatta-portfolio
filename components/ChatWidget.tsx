@@ -1,6 +1,21 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import knowledge from "@/data/knowledge.json";
+
+function localAnswer(raw: string): string {
+  const q = raw.toLowerCase();
+  if (/^(hi|hello|hey|namaste|नमस्ते|नमस्कार)\b/.test(q.trim())) return knowledge.greeting;
+  let best: { score: number; answer: string } = { score: 0, answer: "" };
+  for (const fact of knowledge.facts) {
+    let score = 0;
+    for (const key of fact.keys) {
+      if (q.includes(key.toLowerCase())) score += key.length;
+    }
+    if (score > best.score) best = { score, answer: fact.answer };
+  }
+  return best.score > 0 ? best.answer : knowledge.unavailable;
+}
 
 type Msg = { role: "bot" | "me"; text: string };
 
@@ -33,21 +48,9 @@ export default function ChatWidget({ autoOpen = false }: { autoOpen?: boolean })
     setInput("");
     setBusy(true);
     try {
-      const res = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text, lang }),
-      });
-      const data = await res.json();
-      setMessages((m) => [
-        ...m,
-        { role: "bot", text: data.reply || "I could not reach the assistant. Please try again." },
-      ]);
-    } catch {
-      setMessages((m) => [
-        ...m,
-        { role: "bot", text: "The connection failed. You can email tekbhatta663@gmail.com instead." },
-      ]);
+      // Runs fully in the browser against verified knowledge, so it works on static hosting.
+      await new Promise((r) => setTimeout(r, 420));
+      setMessages((m) => [...m, { role: "bot", text: localAnswer(text) }]);
     } finally {
       setBusy(false);
     }
