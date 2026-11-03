@@ -1,0 +1,17 @@
+{
+  "greeting": "Hi! I'm Tek AI. I answer questions about Tek Bhatta's portfolio in English, Hindi or Nepali. Ask me anything about his studies, skills or projects.",
+  "unavailable": "I don't have verified information about that, so I won't guess. For anything personal or financial, please contact Tek directly at tekbhatta663@gmail.com.",
+  "facts": [
+    { "keys": ["name", "who", "tek", "भट्ट", "नाम", "कौन"], "answer": "Tek Bhatta is a BBS first-year student based in Dhangadhi, Nepal. He is learning AI, LLMs, agentic AI, prompt engineering and web and app development." },
+    { "keys": ["location", "where", "city", "dhangadhi", "nepal", "कहाँ", "ठाउँ"], "answer": "He is based in Dhangadhi, in the far-west of Nepal, and studies at Aishwarya Multiple Campus." },
+    { "keys": ["study", "education", "college", "bbs", "campus", "पढ़ाई", "शिक्षा"], "answer": "He is in his first year of BBS (Bachelor of Business Studies) at Aishwarya Multiple Campus, Dhangadhi, under Tribhuvan University." },
+    { "keys": ["skill", "skills", "know", "सीप", "स्किल"], "answer": "His current focus areas are AI and LLMs, prompt engineering, web development and Kotlin app development. He lists them as in-progress rather than mastered." },
+    { "keys": ["project", "projects", "built", "portfolio", "प्रोजेक्ट"], "answer": "Two documented projects: this portfolio site, and an Android cache cleaner written in Kotlin. Both are linked from the Projects section with repository links where they exist." },
+    { "keys": ["contact", "email", "hire", "reach", "सम्पर्क", "इमेल"], "answer": "You can reach him on LinkedIn at linkedin.com/in/tek-bhatta-1433a3356, on GitHub at github.com/tekbhatta663-source, or by email at tekbhatta663@gmail.com." },
+    { "keys": ["github", "code", "repo", "गिटहब"], "answer": "His code lives at github.com/tekbhatta663-source." },
+    { "keys": ["ai", "llm", "learning", "agent", "एआई"], "answer": "He is learning how LLMs behave, how prompts shape output, and how agentic workflows chain tools together. He prefers to explain what he understands rather than repeat buzzwords." },
+    { "keys": ["certificate", "certification", "course", "certificate", "प्रमाणपत्र"], "answer": "No certifications have been uploaded yet. When he completes one, it will appear in the Certifications section with the document attached." },
+    { "keys": ["freelance", "work", "job", "intern", "काम"], "answer": "He is open to learning opportunities and internships in Nepal or remote. He does not currently list paid freelance work." },
+    { "keys": ["honest", "fake", "claims", "भरोसा"], "answer": "This site follows one rule: nothing is claimed that cannot be shown. Skills are marked in-progress, and projects are described as they are." }
+  ]
+}
