@@ -3,7 +3,8 @@ import Reveal from "@/components/Reveal";
 import ChatWidget from "@/components/ChatWidget";
 import ContactForm from "@/components/ContactForm";
 import ChatTeaser from "@/components/ChatTeaser";
-import { profile, journey, skills, projects, education, certifications } from "@/data/content";
+import { journey } from "@/data/content";
+import { getSiteContent } from "@/lib/site-content";
 
 function SectionHead({ kicker, title, note }: { kicker: string; title: string; note?: string }) {
   return (
@@ -17,7 +18,9 @@ function SectionHead({ kicker, title, note }: { kicker: string; title: string; n
   );
 }
 
-export default function Home() {
+export default async function Home() {
+  const { profile, skills, projects, education, certifications } = await getSiteContent();
+
   return (
     <>
       <Nav />

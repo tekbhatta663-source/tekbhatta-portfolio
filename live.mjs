@@ -1,0 +1,15 @@
+import { chromium } from "playwright-core";
+const browser = await chromium.launch({ args: ["--no-sandbox"] });
+const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, deviceScaleFactor: 2 });
+const page = await ctx.newPage();
+await page.goto("https://tekbhatta663-source.github.io/tekbhatta-portfolio/", { waitUntil: "networkidle" });
+await page.waitForTimeout(1500);
+await page.screenshot({ path: "/app/conversations/6add78e79883f31f19598ab4/live_home.png" });
+await page.getByRole("button", { name: /Chat with Tek AI/i }).click();
+await page.waitForTimeout(600);
+await page.getByPlaceholder(/Ask me something/i).fill("where is he based?");
+await page.keyboard.press("Enter");
+await page.waitForTimeout(1400);
+await page.screenshot({ path: "/app/conversations/6add78e79883f31f19598ab4/live_chat.png" });
+await browser.close();
+console.log("shots done");

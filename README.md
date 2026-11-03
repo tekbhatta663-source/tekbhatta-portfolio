@@ -78,3 +78,26 @@ data/           content.ts (all copy), knowledge.json (Tek AI facts)
 public/         favicon
 supabase/       schema.sql
 ```
+
+
+## Admin dashboard
+
+The site ships with a dashboard at `/admin` for editing content without touching code.
+
+1. Create a free project at supabase.com.
+2. Open the SQL editor and run `supabase/schema.sql`. It creates the tables, turns on row
+   level security, allows public reads, restricts writes to signed-in users, and creates the
+   public `media` storage bucket.
+3. In Supabase go to **Authentication → Users → Add user** and create your own email and
+   password. There is no public sign-up on purpose: only users you create can sign in.
+4. Copy the project URL and the `anon` public key into `.env.local` as
+   `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY`.
+5. Open `/admin`, sign in, and edit projects, skills, education, certificates, messages,
+   the Tek AI knowledge base and your profile settings.
+
+Without those two variables the dashboard shows a setup notice instead of pretending to work,
+and the public site keeps using the honest defaults in `data/content.ts`.
+
+Content edited in the dashboard appears on the public site within a minute. On the static
+GitHub Pages build the site is pre-rendered, so live edits show on the Vercel or self-hosted
+deployment, where the page is rendered on the server.
