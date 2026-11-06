@@ -82,81 +82,122 @@ class PcmTest {
 
     @Test
     fun `ring buffer preserves order across a wrap`() {
-        val ring = PcmRingBuffer(10)
-        val write = shortArrayOf(1, 2, 3, 4, 5, 6, 7, 8)
-        assertTrue(ring.write(write, 0, write.size))
-        val out = ShortArray(8)
-        assertEquals(8, ring.read(out, 8))
+        val ring = PcmRingBuffer(8) // rounds to a 16-slot array, wraps constantly
+        val write = shortArrayOf(1, 2, 3, 4, 5, 6)
+        assertEquals(6, ring.write(write))
+        val out = ShortArray(6)
+        assertEquals(6, ring.read(out, 6))
         assertArrayEquals(write, out)
 
-        // Write past the end so the index wraps.
-        assertTrue(ring.write(shortArrayOf(9, 10, 11, 12), 0, 4))
+        // Write past the physical end of the array: indices must wrap.
+        assertEquals(4, ring.write(shortArrayOf(9, 10, 11, 12)))
         val out2 = ShortArray(4)
         assertEquals(4, ring.read(out2, 4))
         assertArrayEquals(shortArrayOf(9, 10, 11, 12), out2)
     }
 
     @Test
-    fun `ring buffer drops the oldest audio when full`() {
+    fun `ring buffer reports availability and fullness`() {
+        val ring = PcmRingBuffer(8)
+        // Capacity is rounded up, so read it rather than assuming the request.
+        assertTrue(ring.capacity >= 8)
+        assertEquals(0, ring.available)
+        assertEquals(ring.capacity, ring.free)
+
+        ring.write(shortArrayOf(1, 2, 3))
+        assertEquals(3, ring.available)
+        assertEquals(ring.capacity - 3, ring.free)
+
+        ring.write(ShortArray(ring.capacity - 3) { 7 })
+        assertEquals(ring.capacity, ring.available)
+        assertTrue(ring.isFull)
+        assertTrue(ring.free == 0)
+    }
+
+    @Test
+    fun `ring buffer drops the oldest audio, never the newest`() {
         val ring = PcmRingBuffer(4)
-        ring.write(shortArrayOf(1, 2, 3, 4), 0, 4)
-        ring.write(shortArrayOf(5, 6), 0, 2)
+        val cap = ring.capacity
+        // Fill exactly, then push two extra samples.
+        ring.write(ShortArray(cap) { (it + 1).toShort() })
+        assertTrue(ring.isFull)
+        ring.write(shortArrayOf(100, 101))
         assertEquals(2, ring.takeDropped())
-        val out = ShortArray(4)
-        assertEquals(4, ring.read(out, 4))
-        // The two oldest samples were sacrificed, not the newest.
-        assertArrayEquals(shortArrayOf(3, 4, 5, 6), out)
+
+        val out = ShortArray(cap)
+        assertEquals(cap, ring.read(out, cap))
+        // The two oldest values are gone; the two newest are present and last.
+        assertEquals((3).toShort(), out[0])
+        assertEquals(100.toShort(), out[cap - 2])
+        assertEquals(101.toShort(), out[cap - 1])
     }
 
     @Test
-    fun `downsampler halves the sample count and keeps the tone`() {
-        val srcRate = 48_000
-        val ds = Downsampler(srcRate, 16_000)
-        val input = ShortArray(4_800) { i ->
-            (sin(2 * Math.PI * 200 * i / srcRate) * 10_000).toInt().toShort()
-        }
-        val out = ds.process(input, input.size)
-        // 4800 samples at 48k = 100 ms -> 1600 samples at 16k.
-        assertEquals(1_600L, out.size.toLong(), 6L)
-        assertTrue("output should still be audible", Pcm16.rms(out) > 0.05f)
+    fun `ring buffer peek does not consume`() {
+        val ring = PcmRingBuffer(8)
+        ring.write(shortArrayOf(1, 2, 3, 4))
+        val peeked = ShortArray(4)
+        assertEquals(4, ring.peek(peeked, 4))
+        assertEquals(4, ring.available)
+        assertArrayEquals(shortArrayOf(1, 2, 3, 4), peeked)
+        assertEquals(4, ring.read(peeked, 4))
+        assertEquals(0, ring.available)
     }
 
     @Test
-    fun `downsampler keeps no more than one sample of state between calls`() {
-        val ds = Downsampler(44_100, 16_000)
-        var total = 0
-        repeat(10) {
-            val block = ShortArray(441).also { b ->
-                for (i in b.indices) b[i] = (sin(i / 10.0) * 5000).toInt().toShort()
+    fun `ring buffer read is bounded by what is available`() {
+        val ring = PcmRingBuffer(8)
+        ring.write(shortArrayOf(1, 2))
+        val out = ShortArray(8)
+        assertEquals(2, ring.read(out, 8))
+        assertEquals(0, ring.read(out, 8))
+    }
+
+    @Test
+    fun `ring buffer clear empties it without corrupting the writer`() {
+        val ring = PcmRingBuffer(8)
+        ring.write(shortArrayOf(1, 2, 3, 4, 5))
+        ring.clear()
+        assertEquals(0, ring.available)
+        ring.write(shortArrayOf(6, 7))
+        val out = ShortArray(2)
+        assertEquals(2, ring.read(out, 2))
+        assertArrayEquals(shortArrayOf(6, 7), out)
+    }
+
+    @Test
+    fun `ring buffer survives a producer consumer loop without losing order`() {
+        val ring = PcmRingBuffer(256)
+        val expected = ArrayList<Short>()
+        val out = ShortArray(40)
+        var next = 0
+        repeat(500) {
+            // Producer writes less than the consumer takes, so it never fills.
+            if (ring.free >= 16) {
+                val chunk = ShortArray(16) { (next++).toShort() }
+                assertTrue(ring.write(chunk) == 16)
+                chunk.forEach { expected += it }
             }
-            total += ds.process(block, block.size).size
+            val got = ring.read(out, 40)
+            for (i in 0 until got) {
+                assertEquals(expected.removeAt(0), out[i])
+            }
         }
-        // 4410 samples at 44.1k = 100 ms -> about 1600 at 16k.
-        assertEquals(1_600L, total.toLong(), 12L)
+        assertEquals(0, ring.takeDropped())
     }
 
     @Test
-    fun `chunker emits fixed 320 sample frames`() {
-        val chunker = PcmChunker(320)
-        chunker.push(ShortArray(700) { it.toShort() }, 700)
-        val first = chunker.poll()!!
-        val second = chunker.poll()!!
-        assertEquals(320, first.size)
-        assertEquals(320, second.size)
-        assertEquals(null, chunker.poll())
-        assertEquals(0.toShort(), first[0])
-        assertEquals(320.toShort(), second[0])
-    }
+    fun `writeInto encodes into a reused buffer without reallocating`() {
+        val scratch = ByteArray(8)
+        val samples = shortArrayOf(0x0102, -1, 0x0304)
+        Pcm16.writeInto(scratch, 0, samples, samples.size)
+        assertArrayEquals(Pcm16.fromShorts(samples), scratch.copyOf(6))
 
-    @Test
-    fun `chunker ignores nothing when input is not a multiple of the frame size`() {
-        val chunker = PcmChunker(320)
-        chunker.push(ShortArray(1000), 1000)
-        var total = 0
-        while (true) {
-            val chunk = chunker.poll() ?: break
-            total += chunk.size
-        }
-        assertEquals(960, total) // 3 full frames, 40 samples still buffered
+        // Partial encode must only touch the bytes it owns.
+        val guarded = ByteArray(8) { 0x7F }
+        Pcm16.writeInto(guarded, 2, samples, 1)
+        assertEquals(0x02, guarded[2].toInt())
+        assertEquals(0x01, guarded[3].toInt())
+        assertEquals(0x7F, guarded[4].toInt())
     }
 }

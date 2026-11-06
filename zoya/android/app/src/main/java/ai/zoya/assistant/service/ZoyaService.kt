@@ -26,6 +26,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
@@ -316,12 +317,11 @@ class ZoyaService : Service() {
         live.setSleeping()
 
         wakeJob = scope.launch {
-            audio.capture.collect { frame ->
-                if (live.state.value.isLive) return@collect
-                val samples = ai.zoya.assistant.audio.Pcm16.toShorts(frame.pcm16)
-                if (wakeDetector.feed(samples, samples.size)) {
-                    wakeUp(reason = "wake-word")
-                }
+            val samples = ShortArray(ai.zoya.assistant.audio.AudioEngine.FRAME_SAMPLES)
+            while (isActive && !live.state.value.isLive) {
+                val n = audio.readMic(samples, timeoutMs = 120)
+                if (n <= 0) continue
+                if (wakeDetector.feed(samples, n)) wakeUp(reason = "wake-word")
             }
         }
         Log.i(TAG, "sleeping, waiting for the wake word")

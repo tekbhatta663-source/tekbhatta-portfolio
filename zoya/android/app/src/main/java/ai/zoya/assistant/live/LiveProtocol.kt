@@ -105,9 +105,14 @@ object LiveProtocol {
         },
     )
 
-    /** One 20 ms mic frame. */
-    fun audioFrame(pcm16: ByteArray): String {
-        val b64 = Base64Codec.encode(pcm16)
+    /**
+     * One 20 ms mic frame.
+     *
+     * @param length bytes to encode; the caller passes a reusable scratch
+     *   buffer, so only the first [length] bytes are meaningful.
+     */
+    fun audioFrame(pcm16: ByteArray, length: Int = pcm16.size): String {
+        val b64 = Base64Codec.encode(pcm16, length)
         return buildJsonObject {
             put(
                 "realtimeInput",

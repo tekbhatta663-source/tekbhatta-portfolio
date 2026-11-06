@@ -2,6 +2,7 @@ package ai.zoya.assistant.live
 
 import ai.zoya.assistant.BuildConfig
 import ai.zoya.assistant.audio.AudioEngine
+import ai.zoya.assistant.audio.Pcm16
 import ai.zoya.assistant.data.ZoyaPrefs
 import ai.zoya.assistant.domain.ZoyaState
 import ai.zoya.assistant.tools.ToolExecutionEngine
@@ -12,6 +13,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -317,21 +319,29 @@ class LiveSessionManager(
     // ------------------------------------------------------------- mic pump --
 
     /**
-     * Bridges AudioEngine's capture flow to the socket. This is the only place
-     * PCM16 crosses from the recorder thread to the network thread, and it
-     * uses a bounded-flow + mutex send so a slow network can never back-pressure
-     * the microphone.
+     * Bridges the microphone ring to the socket. This is the only place PCM16
+     * crosses from the recorder thread to the network thread.
+     *
+     * Shape matters: we pull 20 ms of samples per iteration out of a lock-free
+     * ring into one reusable array, then base64 that array once. Nothing is
+     * allocated per frame except the frame string itself, so the GC has nothing
+     * to pause for while audio is flowing.
      */
     private fun startMicPump() {
         if (micJob?.isActive == true) return
         micJob = scope.launch {
-            audio.capture.collect { frame ->
-                if (!connected.get()) return@collect
+            val samples = ShortArray(AudioEngine.FRAME_SAMPLES)
+            val pcm = ByteArray(AudioEngine.FRAME_SAMPLES * 2)
+
+            while (isActive && connected.get()) {
+                val n = audio.readMic(samples, timeoutMs = 100)
+                if (n <= 0) continue
 
                 // Local barge-in: if she is talking and the user starts, cut her
                 // off before the server's `interrupted` frame arrives.
                 if (modelSpeaking.get()) {
-                    loudFrames = if (frame.rms > BARGE_IN_RMS) loudFrames + 1 else 0
+                    val rms = Pcm16.rms(samples, n)
+                    loudFrames = if (rms > BARGE_IN_RMS) loudFrames + 1 else 0
                     if (loudFrames >= 3) {
                         loudFrames = 0
                         audio.flushPlayback()
@@ -340,8 +350,9 @@ class LiveSessionManager(
                     }
                 }
 
-                if (_state.value == ZoyaState.Speaking) return@collect
-                send(LiveProtocol.audioFrame(frame.pcm16))
+                if (_state.value == ZoyaState.Speaking) continue
+                Pcm16.writeInto(pcm, 0, samples, n)
+                send(LiveProtocol.audioFrame(pcm, n * 2))
             }
         }
     }

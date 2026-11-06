@@ -10,10 +10,11 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "start": "node server/serve.mjs",
-    "verify": "npm run typecheck && npm run verify:ui && npm run verify:orb && npm run verify:algorithms",
+    "verify": "npm run typecheck && npm run verify:ui && npm run verify:orb && npm run verify:worklet && npm run verify:algorithms",
     "verify:ui": "node --import tsx scripts/render-smoke.tsx",
     "verify:orb": "node --import tsx scripts/render-orb.ts",
-    "verify:algorithms": "node scripts/verify-kotlin-logic.mjs"
+    "verify:algorithms": "node scripts/verify-kotlin-logic.mjs",
+    "verify:worklet": "node scripts/verify-worklet.mjs"
   },
   "dependencies": {
     "@google/genai": "2.32.0",

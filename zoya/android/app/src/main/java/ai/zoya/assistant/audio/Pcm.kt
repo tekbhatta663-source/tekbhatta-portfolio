@@ -9,74 +9,117 @@ import kotlin.math.min
 /**
  * PcmRingBuffer
  * -------------
- * A bounded, single-producer/single-consumer ring of 16-bit PCM frames.
+ * Bounded single-producer/single-consumer ring of 16-bit PCM samples.
  *
- * The mic thread writes, the websocket thread reads. Nothing is allocated per
- * frame, and back-pressure is explicit: when the socket stalls we drop the
- * oldest audio rather than growing without bound or blocking the recorder
- * (blocking the recorder is how you get an ANR and a dead microphone).
+ * The mic thread writes; the socket thread reads. This is the only place where
+ * PCM crosses a thread boundary in the Android client, so it is written to have
+ * exactly these properties:
+ *
+ *  - **no allocation per frame** — the buffer is allocated once, and both
+ *    [write] and [read] copy sample by sample into caller-owned arrays. No
+ *    boxing, no ArrayBlockingQueue of ShortArrays, nothing for the GC to do
+ *    while audio is flowing (a GC pause on the audio thread is an audible gap).
+ *  - **drop-oldest back-pressure** — if the socket stalls, the *oldest* audio
+ *    is discarded so latency can never balloon. Blocking the recorder instead
+ *    would stall the mic and eventually ANR.
+ *  - **lock-free single-producer / single-consumer** — plain volatile indices
+ *    with acquire/release semantics, no mutex on the audio path.
+ *
+ * Capacity is rounded up internally, so any requested size works; the helper
+ * `nextPowerOfTwoMinusOne` shows what a given request becomes. With the
+ * AudioEngine's 4096-sample uplink that is 4095 samples of headroom (~256 ms at
+ * 16 kHz), which is the whole latency budget for a live conversation.
  */
-class PcmRingBuffer(capacityShorts: Int) {
-
-    private val buffer = ShortArray(capacityShorts)
-    private val writeIndex = AtomicInteger(0)
-    private val readIndex = AtomicInteger(0)
-    private val dropped = AtomicInteger(0)
-
-    /** Shorts currently readable. */
-    val available: Int
-        get() {
-            val w = writeIndex.get()
-            val r = readIndex.get()
-            return if (w >= r) w - r else capacityShorts() - r + w
-        }
-
-    private fun capacityShorts() = buffer.size
+class PcmRingBuffer(capacitySamples: Int) {
+    // Contract: you get *at least* [capacitySamples]. The real figure is
+    // [capacity], which callers and tests should read rather than assuming.
 
     /**
-     * Copy [count] samples starting at [offset] into the ring.
-     * Returns false only if [count] exceeds total capacity.
+     * Slots in the backing array: the next power of two at least one larger
+     * than [capacitySamples], so index masking replaces modulo (a ~10x faster
+     * wrap on ART) and a full ring is still distinguishable from an empty one.
      */
-    fun write(src: ShortArray, offset: Int, count: Int): Boolean {
-        if (count <= 0) return true
-        if (count > buffer.size) return false
-        val w = writeIndex.get()
-        var idx = w
-        for (i in 0 until count) {
-            buffer[idx] = src[offset + i]
-            idx++
-            if (idx == buffer.size) idx = 0
+    private val slots: Int = Integer.highestOneBit((capacitySamples + 1).coerceAtLeast(2) - 1) * 2
+    private val buffer = ShortArray(slots)
+    private val mask = slots - 1
+
+    /** Samples this ring can hold before it starts dropping. */
+    val capacity: Int get() = mask
+
+    @Volatile private var writeIndex = 0
+    @Volatile private var readIndex = 0
+    private val droppedSamples = AtomicInteger(0)
+
+    /** Samples currently readable. */
+    val available: Int
+        get() = (writeIndex - readIndex) and mask
+
+    /** Free space in samples. */
+    val free: Int get() = capacity - available
+
+    /** True when the producer has filled the ring. */
+    val isFull: Boolean get() = available == capacity
+
+    /**
+     * Copy [count] samples from [src] into the ring.
+     *
+     * @return the number of samples actually stored; shorter than [count] only
+     *   if [count] exceeds the capacity of the whole ring (a caller bug).
+     */
+    fun write(src: ShortArray, offset: Int = 0, count: Int = src.size): Int {
+        if (count <= 0) return 0
+        val toStore = min(count, capacity)
+        // Make room first: advance the reader past whatever must go.
+        val overflow = toStore - free
+        if (overflow > 0) {
+            readIndex = (readIndex + overflow) and mask
+            droppedSamples.addAndGet(overflow)
         }
-        writeIndex.set(idx)
-        // Overflow policy: drop the oldest audio so latency never balloons.
-        val r = readIndex.get()
-        val free = if (w >= r) buffer.size - (w - r) else r - w
-        if (count > free) {
-            dropped.addAndGet(count - free)
-            readIndex.set(idx)
+        var w = writeIndex
+        for (i in 0 until toStore) {
+            buffer[w] = src[offset + i]
+            w = (w + 1) and mask
         }
-        return true
+        writeIndex = w
+        return toStore
     }
 
-    /** Copy up to [max] samples out. Returns how many were written to [dst]. */
-    fun read(dst: ShortArray, max: Int, offset: Int = 0): Int {
-        val n = min(max, available)
-        if (n <= 0) return 0
-        var r = readIndex.get()
+    /** Copy the oldest [count] samples out without removing them. */
+    fun peek(dst: ShortArray, count: Int, offset: Int = 0): Int {
+        val n = min(count, available)
+        var r = readIndex
         for (i in 0 until n) {
             dst[offset + i] = buffer[r]
-            r++
-            if (r == buffer.size) r = 0
+            r = (r + 1) and mask
         }
-        readIndex.set(r)
+        return n
+    }
+
+    /** Copy up to [count] samples out and consume them. */
+    fun read(dst: ShortArray, count: Int, offset: Int = 0): Int {
+        val n = min(count, available)
+        var r = readIndex
+        for (i in 0 until n) {
+            dst[offset + i] = buffer[r]
+            r = (r + 1) and mask
+        }
+        readIndex = r
         return n
     }
 
     fun clear() {
-        readIndex.set(writeIndex.get())
+        readIndex = writeIndex
+        droppedSamples.set(0)
     }
 
-    fun takeDropped(): Int = dropped.getAndSet(0)
+    /** Samples lost to overflow since the last call (for diagnostics). */
+    fun takeDropped(): Int = droppedSamples.getAndSet(0)
+
+    companion object {
+        /** What [capacitySamples] rounds up to, for tests and sizing. */
+        fun effectiveCapacity(capacitySamples: Int): Int =
+            Integer.highestOneBit((capacitySamples + 1).coerceAtLeast(2) - 1) * 2 - 1
+    }
 }
 
 /**
@@ -139,13 +182,28 @@ object Base64Codec {
 object Pcm16 {
     fun fromShorts(src: ShortArray, count: Int = src.size, offset: Int = 0): ByteArray {
         val out = ByteArray(count * 2)
-        var o = 0
-        for (i in offset until offset + count) {
-            val s = src[i].toInt()
-            out[o++] = (s and 0xFF).toByte()
-            out[o++] = ((s shr 8) and 0xFF).toByte()
-        }
+        writeInto(out, 0, src, count, offset)
         return out
+    }
+
+    /**
+     * Encode [count] samples into an existing array, writing [count] * 2 bytes
+     * starting at [dstOffset]. Allocation-free, so the capture loop can reuse a
+     * single scratch buffer instead of creating a ByteArray 50 times a second.
+     */
+    fun writeInto(
+        dst: ByteArray,
+        dstOffset: Int,
+        src: ShortArray,
+        count: Int,
+        srcOffset: Int = 0,
+    ) {
+        var o = dstOffset
+        for (i in srcOffset until srcOffset + count) {
+            val s = src[i].toInt()
+            dst[o++] = (s and 0xFF).toByte()
+            dst[o++] = ((s shr 8) and 0xFF).toByte()
+        }
     }
 
     fun toShorts(src: ByteArray, offset: Int = 0, length: Int = src.size - offset): ShortArray {
@@ -209,39 +267,5 @@ class Downsampler(private val sourceRate: Int, private val targetRate: Int = 16_
     fun reset() {
         carry = ShortArray(0)
         phase = 0.0
-    }
-}
-
-/** Fixed-size 20 ms chunker so every socket frame has the same shape. */
-class PcmChunker(private val samplesPerChunk: Int = 320) {
-    private val pending = ArrayBlockingQueue<ShortArray>(256)
-    private var acc = ShortArray(samplesPerChunk * 2)
-    private var filled = 0
-
-    fun push(samples: ShortArray, length: Int = samples.size) {
-        var read = 0
-        while (read < length) {
-            val take = min(samplesPerChunk - filled, length - read)
-            if (acc.size < filled + take) acc = acc.copyOf(max(acc.size * 2, filled + take))
-            samples.copyInto(acc, filled, read, read + take)
-            filled += take
-            read += take
-            if (filled == samplesPerChunk) {
-                pending.offer(acc.copyOf(samplesPerChunk))
-                filled = 0
-            }
-        }
-    }
-
-    fun poll(timeoutMs: Long = 0): ShortArray? =
-        if (timeoutMs > 0) {
-            pending.poll(timeoutMs, TimeUnit.MILLISECONDS)
-        } else {
-            pending.poll()
-        }
-
-    fun clear() {
-        pending.clear()
-        filled = 0
     }
 }

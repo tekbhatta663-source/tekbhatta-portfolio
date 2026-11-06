@@ -35,7 +35,7 @@ configured. Nothing pretends to work.
 
 ```bash
 npm run build && npm start        # production: node server/serve.mjs
-npm run verify                    # typecheck + render + audio-algorithm checks
+npm run verify                    # typecheck + render + worklet + algorithm checks
 ```
 
 Deploy anywhere Node runs (Render, Fly, a VPS, Docker). `PORT` is respected.
@@ -68,6 +68,14 @@ web/src
 PCM16 mono @16 kHz, 40 ms frames → base64 → `sendRealtimeInput`. Model audio
 comes back as base64 PCM16 @24 kHz and is scheduled on an absolute play head in
 a 24 kHz `AudioContext`, so playback is gapless.
+
+The worklet runs on the audio render thread, so it is **allocation-free per
+sample**: a fixed power-of-two carry ring for the resampler, integer indices
+instead of `push`, one `Int16Array` per *completed* 40 ms chunk (25/second,
+transferred zero-copy across the port), and a passthrough path when the device
+is already at 16 kHz. `scripts/verify-worklet.mjs` runs the real file against a
+fake `AudioWorkletProcessor` and asserts sample counts at 48/44.1/16 kHz,
+chunk size, carry-over across 1-sample quanta, clipping and flush.
 
 **Interruptions.** Three layers, cheapest first:
 
@@ -103,11 +111,13 @@ Clean Architecture / MVVM, in practice:
 - `ZoyaViewModel` never touches audio; it binds to `ZoyaService.session` and
   exposes one immutable `UiState`. Rotating the phone, or the activity dying,
   changes nothing about the conversation.
-- `LiveSessionManager` knows nothing about Compose. It pulls 20 ms frames from
-  a bounded `SharedFlow`, pushes them through a `Mutex` onto the socket (OkHttp
-  throws on concurrent sends), and hands model audio to a queue that a dedicated
-  writer thread drains into `AudioTrack`. A slow network can never block the
-  recorder.
+- `LiveSessionManager` knows nothing about Compose. It pulls 20 ms frames out
+  of a **lock-free SPSC ring** (`PcmRingBuffer`), encodes them into one reusable
+  `ByteArray`, and pushes them through a `Mutex` onto the socket (OkHttp throws
+  on concurrent sends). Model audio goes into a bounded queue that a dedicated
+  writer thread drains into `AudioTrack`, with a 900 ms latency guard. A slow
+  network can never block the recorder, and nothing on the audio path allocates
+  per frame.
 - No SDK dependency for the protocol: `LiveProtocol.kt` speaks
   BidiGenerateContent directly, so a broken SDK release cannot silently stop
   her from connecting.
@@ -171,10 +181,12 @@ Nothing in this folder claims a capability it does not have.
 - **Requires a device:** the Android module needs an emulator or phone with a
   mic. There is no JDK in the environment this was written in, so the Kotlin
   has not been compiled here — the pure algorithms (`Base64Codec`, `Pcm16`,
-  `Downsampler`, the protocol frames, the wake-word heuristic) were verified by
-  transcription against reference implementations
-  (`web/scripts/verify-kotlin-logic.mjs`) and by the JUnit tests in
-  `android/app/src/test`.
+  `Downsampler`, `PcmRingBuffer`, the protocol frames, the wake-word heuristic)
+  were verified by transcription against reference implementations
+  (`web/scripts/verify-kotlin-logic.mjs`, including randomized
+  producer/consumer load on the ring) and by the 15 JUnit tests in
+  `android/app/src/test`. Allocation, threading and lifecycle behaviour was
+  reviewed by hand; that is not the same as a compiler.
 - **Not implemented on purpose:** reading the model's transcripts on screen
   (the brief says no text UI), and auto-sending WhatsApp or email (no API
   exists; faking it would be a lie).

@@ -191,5 +191,91 @@ check("audio frame round trips through base64", () => {
   assert.deepEqual(Buffer.from(parsed.realtimeInput.audio.data, "base64"), pcm);
 });
 
+// ---- PcmRingBuffer (transcribed from audio/Pcm.kt) -------------------------
+class PcmRingBuffer {
+  constructor(capacitySamples, nextPow2) {
+    const x = Math.max(capacitySamples + 1, 2) - 1;
+    const hob = x <= 0 ? 0 : 1 << (31 - Math.clz32(x));
+    const n = hob * 2;
+    this.buffer = new Array(n).fill(0);
+    this.mask = n - 1;
+    this.w = 0;
+    this.r = 0;
+    this.dropped = 0;
+  }
+  get capacity() { return this.mask; }
+  get available() { return (this.w - this.r) & this.mask; }
+  get free() { return this.capacity - this.available; }
+  get isFull() { return this.available === this.capacity; }
+  write(src, offset = 0, count = src.length) {
+    if (count <= 0) return 0;
+    const toStore = Math.min(count, this.capacity);
+    const overflow = toStore - this.free;
+    if (overflow > 0) {
+      this.r = (this.r + overflow) & this.mask;
+      this.dropped += overflow;
+    }
+    let w = this.w;
+    for (let i = 0; i < toStore; i++) {
+      this.buffer[w] = src[offset + i];
+      w = (w + 1) & this.mask;
+    }
+    this.w = w;
+    return toStore;
+  }
+  read(dst, count, offset = 0) {
+    const n = Math.min(count, this.available);
+    let r = this.r;
+    for (let i = 0; i < n; i++) {
+      dst[offset + i] = this.buffer[r];
+      r = (r + 1) & this.mask;
+    }
+    this.r = r;
+    return n;
+  }
+  takeDropped() { const d = this.dropped; this.dropped = 0; return d; }
+}
+
+check("ring buffer rounds capacity up to a power of two", () => {
+  assert.equal(new PcmRingBuffer(8).capacity, 15);
+  assert.equal(new PcmRingBuffer(4096).capacity, 8191);
+  assert.equal(new PcmRingBuffer(2).capacity, 3);
+});
+
+check("ring buffer keeps order across wrap and drops oldest when full", () => {
+  const ring = new PcmRingBuffer(8);
+  ring.write([1, 2, 3, 4, 5, 6]);
+  const out = new Array(6);
+  assert.equal(ring.read(out, 6), 6);
+  assert.deepEqual(out, [1, 2, 3, 4, 5, 6]);
+
+  const cap = ring.capacity;
+  ring.write(Array.from({ length: cap }, (_, i) => i + 1));
+  ring.write([100, 101]);
+  assert.equal(ring.takeDropped(), 2);
+  const all = new Array(cap);
+  ring.read(all, cap);
+  assert.equal(all[0], 3);
+  assert.equal(all[cap - 2], 100);
+  assert.equal(all[cap - 1], 101);
+});
+
+check("ring buffer preserves integrity under random producer/consumer load", () => {
+  const ring = new PcmRingBuffer(256);
+  const expected = [];
+  const out = new Array(40);
+  let next = 0;
+  for (let step = 0; step < 5000; step++) {
+    if (ring.free >= 16 && Math.random() < 0.7) {
+      const chunk = Array.from({ length: 16 }, () => next++);
+      ring.write(chunk);
+      expected.push(...chunk);
+    }
+    const got = ring.read(out, 40);
+    for (let i = 0; i < got; i++) assert.equal(expected.shift(), out[i]);
+  }
+  assert.equal(ring.takeDropped(), 0);
+});
+
 console.log(failures === 0 ? "\nALL KOTLIN ALGORITHM CHECKS PASSED" : `\n${failures} FAILED`);
 process.exit(failures ? 1 : 0);

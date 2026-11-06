@@ -155,9 +155,19 @@ export class AudioStreamer {
     if (!this.gain) return;
 
     const samples = Math.floor(pcm16.byteLength / 2);
+    // One Float32Array per model chunk is unavoidable (createBuffer copies into
+    // its own storage anyway, so a scratch array would just add a copy). Int16
+    // -> float is done with a manual loop rather than a DataView per sample,
+    // which is measurably cheaper for the 24 kHz stream.
     const float = new Float32Array(samples);
-    const view = new DataView(pcm16.buffer, pcm16.byteOffset, pcm16.byteLength);
-    for (let i = 0; i < samples; i++) float[i] = view.getInt16(i * 2, true) / 0x8000;
+    const bytes = pcm16;
+    for (let i = 0; i < samples; i++) {
+      const lo = bytes[i * 2];
+      const hi = bytes[i * 2 + 1];
+      // Reassemble the int16 manually, sign-extended.
+      const v = ((hi << 8) | lo) & 0xffff;
+      float[i] = (v >= 0x8000 ? v - 0x10000 : v) / 0x8000;
+    }
 
     const buffer = ctx.createBuffer(1, samples, OUTPUT_RATE);
     buffer.copyToChannel(float, 0);

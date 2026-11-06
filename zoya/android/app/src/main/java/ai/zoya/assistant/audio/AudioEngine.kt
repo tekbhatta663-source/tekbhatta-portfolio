@@ -20,12 +20,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.channels.BufferOverflow
-import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -41,15 +37,17 @@ import kotlin.math.sqrt
  * Everything that touches a speaker or a microphone. Three concerns, three
  * separate places, so each can be reasoned about (and stopped) on its own:
  *
- *  - **Capture**: AudioRecord @ 16 kHz mono -> 20 ms frames, emitted as
- *    [CaptureFrame] on a hot SharedFlow. Never blocks the caller.
+ *  - **Capture**: AudioRecord @ 16 kHz mono -> [PcmRingBuffer]. The recorder
+ *    thread only ever writes to the ring; readers pull from it, so a stalled
+ *    network can never block the microphone.
  *  - **Playback**: one AudioTrack @ 24 kHz with a bounded writer thread. The
  *    model's audio is queued, never played on the socket thread. flush()
  *    empties the queue in one call — that is barge-in.
  *  - **Levels**: mic RMS and playback RMS as StateFlows for the Compose orb.
  *
- * Thread model: one recorder thread, one player thread, both owned here.
- * Everything crossing a thread boundary is either a channel or a ring buffer.
+ * Thread model: one recorder thread, one player thread, both owned here. The
+ * only things crossing a thread boundary are a lock-free ring (mic) and a
+ * bounded queue (playback); neither allocates per frame.
  */
 class AudioEngine(private val context: Context) {
 
@@ -59,20 +57,12 @@ class AudioEngine(private val context: Context) {
         const val PLAYBACK_RATE = 24_000
         /** 20 ms at 16 kHz. */
         const val FRAME_SAMPLES = 320
+        /** ~256 ms of microphone audio in flight (4096 - 1, power of two). */
+        private const val UPLINK_SAMPLES = 4096
         private val PLAYBACK_BACKLOG_LIMIT_MS = 900L
     }
 
-    /** One 20 ms frame: [pcm16] is little-endian bytes ready for the socket. */
-    data class CaptureFrame(val pcm16: ByteArray, val rms: Float)
-
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-
-    private val _capture = MutableSharedFlow<CaptureFrame>(
-        replay = 0,
-        extraBufferCapacity = 64,
-        onBufferOverflow = BufferOverflow.DROP_OLDEST,
-    )
-    val capture: SharedFlow<CaptureFrame> = _capture.asSharedFlow()
 
     private val _micLevel = MutableStateFlow(0f)
     val micLevel: StateFlow<Float> = _micLevel.asStateFlow()
@@ -94,7 +84,15 @@ class AudioEngine(private val context: Context) {
     @Volatile private var capturing = false
     private val muted = AtomicBoolean(false)
     private var downsampler: Downsampler? = null
-    private var chunker: PcmChunker? = null
+
+    /**
+     * Mic -> socket hand-off. Written by the recorder thread only, read by
+     * whatever is streaming (the session's mic pump). Deliberately NOT a
+     * SharedFlow of byte arrays: at 50 frames/second that boxes a ShortArray,
+     * copies it twice and hands the GC 50 short-lived objects per second. This
+     * ring is allocated once and copied into one reusable output buffer.
+     */
+    private val uplink = PcmRingBuffer(UPLINK_SAMPLES)
 
     fun hasMicPermission(): Boolean =
         ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
@@ -145,15 +143,16 @@ class AudioEngine(private val context: Context) {
         }
 
         recorder = rec
+        // 16 kHz in, 16 kHz out: this is a guard for devices that ignore the
+        // requested rate, not a real conversion. Cheap when it is a no-op.
         downsampler = Downsampler(CAPTURE_RATE, CAPTURE_RATE)
-        chunker = PcmChunker(FRAME_SAMPLES)
+        uplink.clear()
         capturing = true
         _error.value = null
 
         recordJob = scope.launch(Dispatchers.IO) {
             Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
             val readBuf = ShortArray(FRAME_SAMPLES)
-            val outBytes = ByteArray(FRAME_SAMPLES * 2)
             try {
                 rec.startRecording()
                 while (isActive && capturing) {
@@ -163,22 +162,19 @@ class AudioEngine(private val context: Context) {
                     val level = Pcm16.rms(readBuf, n)
                     _micLevel.value = smooth(_micLevel.value, level)
 
-                    if (muted.get() || !emitFrames) continue
-
-                    // Already 16 kHz, so this is a pass-through; kept for
-                    // devices that report a different actual rate.
-                    val pcm = downsampler?.process(readBuf, n) ?: readBuf.copyOf(n)
-                    chunker?.push(pcm, pcm.size)
-
-                    while (true) {
-                        val chunk = chunker?.poll() ?: break
-                        for (i in chunk.indices) {
-                            val s = chunk[i].toInt()
-                            outBytes[i * 2] = (s and 0xFF).toByte()
-                            outBytes[i * 2 + 1] = ((s shr 8) and 0xFF).toByte()
-                        }
-                        _capture.tryEmit(CaptureFrame(outBytes.copyOf(), level))
+                    // While muted (local barge-in / user mute) we keep the ring
+                    // empty rather than filling it with audio nobody may hear.
+                    if (muted.get() || !emitFrames) {
+                        uplink.clear()
+                        continue
                     }
+
+                    // AudioRecord is opened at 16 kHz, so this is a pass-through;
+                    // the downsampler stays as a guard for devices that hand back
+                    // frames at their native rate despite the request.
+                    val pcm = downsampler?.process(readBuf, n) ?: readBuf
+                    if (pcm.isEmpty()) continue
+                    uplink.write(pcm, 0, pcm.size)
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "capture loop died", e)
@@ -194,12 +190,53 @@ class AudioEngine(private val context: Context) {
 
     fun stopCapture() {
         capturing = false
+        // Wait for the recorder loop to exit: it writes to the ring, and a
+        // restart must not race a thread that still believes it is recording.
         recordJob?.cancel()
+        runCatching { recordJob?.join(400) }
         recordJob = null
-        chunker?.clear()
+        // Belt and braces: a device whose read() ignores cancellation should not
+        // be left holding the mic open.
+        runCatching { recorder?.stop() }
+        runCatching { recorder?.release() }
+        recorder = null
+        uplink.clear()
         downsampler?.reset()
         _micLevel.value = 0f
     }
+
+    /**
+     * Pull the next [dst.size] samples of microphone audio into [dst].
+     *
+     * Blocking with a timeout, called from the streaming coroutine (never from
+     * the recorder thread). Returns 0 on timeout so the caller can check for
+     * cancellation and socket state without spinning.
+     *
+     * The 2 ms sleep is jittery on purpose: parked-and-woken threads inside
+     * audio callbacks are exactly what AudioRecord warns about ("unable to
+     * configure", "obtain buffer timed out"). We are not on the audio callback
+     * here, and ~20 wakeups a second is nothing next to a 320-sample frame.
+     */
+    fun readMic(dst: ShortArray, timeoutMs: Long = 100): Int {
+        val deadline = System.nanoTime() + timeoutMs * 1_000_000
+        while (true) {
+            val n = uplink.read(dst, dst.size)
+            if (n > 0) return n
+            if (System.nanoTime() > deadline || !capturing) return 0
+            try {
+                Thread.sleep(2)
+            } catch (e: InterruptedException) {
+                // Cancellation must not swallow the interrupt flag.
+                Thread.currentThread().interrupt()
+                return 0
+            }
+        }
+    }
+
+    fun clearMic() = uplink.clear()
+
+    /** Samples the ring had to discard because the socket could not keep up. */
+    fun takeDroppedMicSamples(): Int = uplink.takeDropped()
 
     /** True = ignore mic input upstream (used while Zoya speaks, if desired). */
     fun setMuted(value: Boolean) = muted.set(value)
