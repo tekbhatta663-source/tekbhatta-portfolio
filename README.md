@@ -101,3 +101,23 @@ and the public site keeps using the honest defaults in `data/content.ts`.
 Content edited in the dashboard appears on the public site within a minute. On the static
 GitHub Pages build the site is pre-rendered, so live edits show on the Vercel or self-hosted
 deployment, where the page is rendered on the server.
+
+## Zoya — voice assistant (separate project)
+
+[`zoya/`](zoya) holds **Zoya**, a realtime voice-to-voice AI assistant built on
+the Gemini Live API (`gemini-3.1-flash-live-preview`), audio in / audio out
+only, with no text chat.
+
+- [`zoya/web`](zoya/web) — React 19 + TypeScript + Tailwind v4 + Vite. Ephemeral
+  tokens, AudioWorklet PCM16 capture, 24 kHz gapless playback, barge-in,
+  tool calls (`openWebsite`, timers, memory, share, clipboard).
+- [`zoya/android`](zoya/android) — Kotlin + Jetpack Compose, foreground service
+  with a local wake word, and native tools: `openApp`,
+  `searchAndCallContact`, `sendWhatsAppMessage`, `sendGmail`.
+
+It is independent of this portfolio app (its own `package.json`, its own
+build); nothing here imports it. Start with [`zoya/README.md`](zoya/README.md).
+
+```bash
+cd zoya/web && npm install && npm run dev   # needs GEMINI_API_KEY in .env.local
+```
