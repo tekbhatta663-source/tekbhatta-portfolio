@@ -1,0 +1,10 @@
+# Copy to zoya.properties (git-ignored) and fill in.
+#
+# Used at build time via buildConfigField, so it is compiled into the APK.
+# Prefer TOKEN_SERVER_URL in any shared build: then the phone only ever holds a
+# single-use token, never the long-lived key.
+GEMINI_API_KEY=
+
+# Optional: your deployed web app. When set, the app mints ephemeral tokens
+# through POST /api/token instead of using the key above.
+# TOKEN_SERVER_URL=https://your-zoya-app.example.com

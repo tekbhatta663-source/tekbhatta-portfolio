@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Zoya</string>
+
+    <string name="notif_channel_listening">Zoya — listening</string>
+    <string name="notif_channel_listening_desc">Keeps Zoya awake for the wake word</string>
+    <string name="notif_title_idle">Zoya is standing by</string>
+    <string name="notif_title_waiting">Waiting for “Zoya”…</string>
+    <string name="notif_title_live">Zoya is on the line</string>
+    <string name="notif_title_speaking">Zoya is talking</string>
+    <string name="notif_action_stop">Stop</string>
+    <string name="notif_action_open">Open</string>
+
+    <string name="perm_title">Before we start</string>
+    <string name="perm_body">Zoya needs a few things to actually be useful. Each one unlocks a specific ability — nothing is asked for “just in case”.</string>
+    <string name="perm_continue">Continue</string>
+    <string name="perm_grant">Allow</string>
+    <string name="perm_granted">Allowed</string>
+    <string name="perm_open_settings">Settings</string>
+</resources>

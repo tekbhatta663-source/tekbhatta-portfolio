@@ -1,0 +1,37 @@
+{
+  "name": "zoya-web",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Zoya \u2014 realtime voice-to-voice AI assistant (Gemini Live API, audio in / audio out only)",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "start": "node server/serve.mjs",
+    "verify": "npm run typecheck && npm run verify:ui && npm run verify:orb && npm run verify:worklet && npm run verify:algorithms",
+    "verify:ui": "node --import tsx scripts/render-smoke.tsx",
+    "verify:orb": "node --import tsx scripts/render-orb.ts",
+    "verify:algorithms": "node scripts/verify-kotlin-logic.mjs",
+    "verify:worklet": "node scripts/verify-worklet.mjs"
+  },
+  "dependencies": {
+    "@google/genai": "2.32.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "4.3.4",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "@vitejs/plugin-react": "6.2.1",
+    "tailwindcss": "4.3.4",
+    "typescript": "5.9.3",
+    "vite": "8.3.6",
+    "@napi-rs/canvas": "^0.1.65",
+    "@types/node": "^22.10.2",
+    "jsdom": "^25.0.1",
+    "tsx": "^4.19.2"
+  }
+}

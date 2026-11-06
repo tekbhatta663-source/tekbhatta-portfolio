@@ -1,0 +1,26 @@
+# Node (web client)
+web/node_modules/
+web/dist/
+web/.env
+web/.env.local
+web/scripts/out/
+web/server/*.log
+web/tsconfig.tsbuildinfo
+
+# Android
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/zoya.properties
+android/.idea/
+android/captures/
+*.iml
+*.apk
+*.aab
+*.keystore
+*.jks
+
+# OS noise
+.DS_Store
+Thumbs.db
